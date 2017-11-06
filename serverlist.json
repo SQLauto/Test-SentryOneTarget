@@ -1,0 +1,23 @@
+{
+    "targets" : [
+        {
+            "ServerName": "daffodil",
+            "InstanceName": "daffodil\\instance_a",
+            "UserName": "marksql",
+            "Password": "marksql",
+            "SQLPort": 2000
+        },
+        {
+            "ServerName": "daffodil",
+            "InstanceName": "daffodil\\instance_b",
+            "SQLPort": 2000
+        },
+        {
+            "ServerName": "wisteria"
+        },
+        {
+            "ServerName": "sulphur"
+        }
+            
+    ]
+}
