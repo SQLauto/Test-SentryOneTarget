@@ -63,10 +63,6 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
         # https://cdn.sentryone.com/help/qs/webframe.html?Performance%20Advisor%20Required%20Ports.html#Performance%20Advisor%20Required%20Ports.html#Performance%20Advisor%20Required%20Ports.html
         Write-Verbose "Resolving IP Address ..."
         $ip = [string](Resolve-DnsName -Name "$ServerName" -ErrorAction 'Stop' -Verbose:$False).IPAddress
-        $results = @{
-            ServerName = $ServerName
-            InstanceName = $InstanceName
-            IpAddress = $ip}
         
         Write-Verbose "Testing SQL Port $SQLPort ..."
         $IsSqlPortOpen = "FAIL - Unknown error" 
@@ -79,12 +75,6 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
             $IsSqlPortOpen = $Error[0].Exception.InnerException.Message
         }
 
-        $results += @{ IsSqlPortOpen = $IsSqlPortOpen }        
-
-        if($results.IsSqlPortOpen -ne "Pass") {
-            return [PSCustomObject]$results
-        }
-
         Write-Verbose "Testing SMB/RPC Port 445 ..."
         $IsPort445Open = "FAIL"
         try {
@@ -95,7 +85,6 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
         catch {
             $IsPort445Open = $Error[0].Exception.InnerException.Message
         }
-        $results += @{ IsPort445Open = $IsPort445Open }
         
         Write-Verbose "Testing RPC Port 135 ..."
         $IsPort135Open = "FAIL"
@@ -107,37 +96,50 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
         catch {
             $IsPort135Open = $Error[0].Exception.InnerException.Message
         }
-        $results += @{ IsPort135Open = $IsPort135Open }
 
         # test SQL Connection has sysadmin role
-        Write-Verbose "Testing sysadmin rights in SQL Server ..."
-        $SqlCmdArgs = @{
-            ServerInstance = $InstanceName
-            Query = "select is_srvrolemember('sysadmin') as IsSysAdmin"
-        }
-        if (! [string]::IsNullOrEmpty($UserName)) {
-            $SqlCmdArgs += @{
-                UserName = $UserName
-                Password = $Password 
-            }
-        }
         $IsSQLSysAdmin = "FAIL"
-        try {
-            if ((Invoke-Sqlcmd @SqlCmdArgs).IsSysAdmin -eq 1) {
-                $IsSQLSysAdmin = "Pass"
+        if ($IsSqlPortOpen -eq "Pass")
+        {
+            Write-Verbose "Testing sysadmin rights in SQL Server ..."
+            $SqlCmdArgs = @{
+                ServerInstance = $InstanceName
+                Query = "select is_srvrolemember('sysadmin') as IsSysAdmin"
+                IncludeSqlUserErrors = $true
+                ErrorAction = 'SilentlyContinue'
+                ErrorVariable = 'SQLError'
             }
+            if (-not [string]::IsNullOrEmpty($UserName)) {
+                $SqlCmdArgs += @{
+                    UserName = $UserName
+                    Password = $Password 
+                }
+            }
+
+            try {
+                if ((Invoke-Sqlcmd @SqlCmdArgs).IsSysAdmin -eq 1) {
+                    $IsSQLSysAdmin = "Pass"
+                }
+            }
+            catch {
+                if (-not [string]::IsNullOrEmpty($Error[0].Exception.InnerException.Message)) 
+                {
+                    $IsSQLSysAdmin = $Error[0].Exception.InnerException.Message
+                }
+            }
+            # let's catch the uncatcheable
+            if (-not [string]::IsNullOrEmpty($SQLError))
+            {
+                $IsSQLSysAdmin = $SQLError.Exception.Message
+            }        
         }
-        catch{
-            $IsSQLSysAdmin = $Error[0].Exception.InnerException.Message
-        }
-        $results += @{IsSQLSysAdmin = $IsSQLSysAdmin}
-        
 
         # test Windows connection is in local admins group
-        Write-Verbose "Testing is Windows Local Admin ..."
+        # TODO: Convert this test so that WinRM is not used. WinRM is not a requirement for Sentry One so it needs to work without it        
+        Write-Verbose "Testing is Windows Local Admin using WinRM ..."
         $IsLocalAdmin = "FAIL"
         try {
-            $IsLocalAdmin = Invoke-Command -ComputerName $ServerName {
+            $IsLocalAdmin = Invoke-Command -ComputerName $ServerName -ErrorVariable LocalAdminError -ErrorAction SilentlyContinue {
                 ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
             }
             if ($IsLocalAdmin) {
@@ -146,41 +148,86 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
         }
         catch
         {
-            $IsLocalAdmin = $Error[0].Exception.InnerException.Message
+            $IsLocalAdmin = $Error[0].Exception.Message
         }
-        $results += @{IsLocalAdmin = $IsLocalAdmin}
+
+        # let's catch the uncatcheable
+        if (-not [string]::IsNullOrEmpty($LocalAdminError))
+        {
+            $IsLocalAdmin = $LocalAdminError
+        }
 
         # test WMI connection
-        Write-Verbose "Testing WMI Connection ..."
-        $WMITest = "FAIL"
-        try {
-            if (-not ([string]::IsNullOrEmpty((Get-WmiObject -class Win32_OperatingSystem -computername $ServerName).Caption)))
-            {
-                $WMITest = "Pass"
-            }
-        }
-        catch
-        {
-            $WMITest = $Error[0].Exception.InnerException.Message
-        }
         
-        $results += @{ WMITest = $WMITest }
-
-        # test perfmon
-        Write-Verbose "Testing Perfmon Counters (takes a while) ..."
-        $PerfmonTest = "FAIL"
-        try {
-            if(((get-counter -ListSet Processor -ComputerName $ServerName).Counter.Count) -gt 0)
+        if ($IsSqlPortOpen -eq "Pass")
+        {        
+            Write-Verbose "Testing WMI Connection ..."
+            $WMITest = "FAIL"
+            try {
+                if (-not ([string]::IsNullOrEmpty((Get-WmiObject -class Win32_OperatingSystem -computername $ServerName).Caption)))
+                {
+                    $WMITest = "Pass"
+                }
+            }
+            catch
             {
-                $PerfmonTest = "Pass"
+                $WMITest = $Error[0].Exception.Message
             }
         }
-        catch{
-            $PerfmonTest = $Error[0].Exception.InnerException.Message
+        # test perfmon
+        if ($IsSqlPortOpen -eq "Pass")
+        {
+            Write-Verbose "Testing Perfmon Counters (takes a while) ..."
+            $PerfmonTest = "FAIL"
+            try {
+                if(((get-counter -ListSet Processor -ComputerName $ServerName -ErrorAction SilentlyContinue -ErrorVariable PerfmonError).Counter.Count) -gt 0)
+                {
+                    $PerfmonTest = "Pass"
+                }
+            }
+            catch{
+                $PerfmonTest = $Error[0].Exception.Message
+            }
+            # let's catch the uncatcheable
+            if (-not [string]::IsNullOrEmpty($PerfmonError))
+            {
+                $PerfmonTest = $PerfmonError
+            }
         }
-        $results += @{ PerfmonTest = $PerfmonTest }
+        $SentryOneMode = "Not monitored"
+        if (
+            ($IsSQLSysadmin -eq "Pass") -and
+            ($PerfmonTest -eq "Pass") -and 
+            ($IsLocalAdmin -eq "Pass") -and
+            ($WMITest -eq "Pass")
+        )
+        {
+            $SentryOneMode = "Full"
+        }
 
-        return [PSCustomObject]$results
+        if (
+            ($IsSQLSysadmin -eq "Pass") -and
+            (($PerfmonTest -ne "Pass") -or
+            ($IsLocalAdmin -ne "Pass") -or
+            ($WMITest -ne "Pass"))
+        )
+        {
+            $SentryOneMode = "Limited"
+        }
+
+        return [PSCustomObject]@{
+            ServerName = $ServerName
+            InstanceName = $InstanceName
+            IpAddress = $ip
+            SentryOneMode = $SentryOneMode
+            IsSqlPortOpen = $IsSqlPortOpen
+            IsPort445Open = $IsPort445Open
+            IsPort135Open = $IsPort135Open
+            IsSQLSysAdmin = $IsSQLSysAdmin
+            IsLocalAdmin = $IsLocalAdmin
+            PerfmonTest = $PerfmonTest
+            WMITest = $WMITest
+        }
     }
 }
 
