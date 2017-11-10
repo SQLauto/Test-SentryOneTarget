@@ -24,6 +24,8 @@ The function `Test-SentryOneTarget` is designed to test that the requirements ar
 
 If the SQLSysadmin test passes but others fail, then SentryOne will be able to connect in **Limited Mode** which means that the Windows performance metrics will not be gathered, only the SQL Server ones.
 
+The PowerShell session must be run with Administrative Priveleges when running this script. [RSAT](https://support.microsoft.com/en-gb/help/2693643/remote-server-administration-tools-rsat-for-windows-operating-systems) must be also be installed on the workstation, or preferably on the Sentry One monitoring server.
+
 Requirements for **Full Mode**:
 
 ### [Permissions](https://cdn.sentryone.com/help/qs/webframe.html?Performance%20Advisor%20Required%20Ports.html#Performance_Advisor_Security_Requirements.html)
@@ -174,7 +176,9 @@ Passed: 5 Failed: 0 Skipped: 0 Pending: 0 Inconclusive: 0
 
 Tested against:
 
-* Windows Server 2012 R2, Windows Server 2016
-* Windows 10
+* Windows Server 2008 R2, Windows Server 2012 R2, Windows Server 2016 (targets)
+* SQL Server 2008 R2 and later (targets)
+* Windows Server 2012 R2, Windows Server 2016 (monitoring server)
+* Windows 10 (Sentry One Client)
 
 It may work on earlier versions of Windows, but this hasn't been tested.
