@@ -60,14 +60,51 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
             $SQLPort = 1433
         }
         
+        if(-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator"))
+        {
+            throw "This script must be run with Administrative privileges. Run as Administrator and try again."
+        }
+
+        if(-not (Test-IsRSATInstalled)) {
+            throw "This script requires Remote Server Administration Tools (RSAT) installed. Please download and install and try again."
+        }
+
         # https://cdn.sentryone.com/help/qs/webframe.html?Performance%20Advisor%20Required%20Ports.html#Performance%20Advisor%20Required%20Ports.html#Performance%20Advisor%20Required%20Ports.html
         Write-Verbose "Resolving IP Address ..."
         $ip = [string](Resolve-DnsName -Name "$ServerName" -ErrorAction 'Stop' -Verbose:$False).IPAddress
-        $results = @{
-            ServerName = $ServerName
-            InstanceName = $InstanceName
-            IpAddress = $ip}
-        
+
+        # let's try connecting to the SQL Server Instance directly without testing the ports first
+        # named instances can have dynamic ports so let's just try and connect.
+        Write-Verbose "Enumerating Port in SQL Server ..."
+        $SqlCmdArgs = @{
+            ServerInstance = $InstanceName
+            Query = @"
+DECLARE @Ports TABLE (LogDate datetime, ProcessInfo nvarchar(30), Text nvarchar(max))
+INSERT @Ports (LogDate, ProcessInfo, Text)
+exec xp_readerrorlog 0, 1, N'Server is listening on', N'''any'' <ipv4>', NULL, NULL, N'asc'
+select top 1 Text from @Ports ORDER BY LogDate
+"@
+            IncludeSqlUserErrors = $true
+            ErrorAction = 'SilentlyContinue'
+        }
+        if (-not [string]::IsNullOrEmpty($UserName)) {
+            $SqlCmdArgs += @{
+                UserName = $UserName
+                Password = $Password 
+            }
+        }
+        try {
+            $result = (Invoke-Sqlcmd @SqlCmdArgs).Text -match "\d{4,5}"
+            if(-not [string]::IsNullOrEmpty($matches[0])) 
+            {            
+                $SQLPort = $matches[0]
+                Write-Verbose "Discovered SQL Server is listening on port $SQLPort"
+            }
+        }
+        catch {
+            # swallow the exception
+        }
+
         Write-Verbose "Testing SQL Port $SQLPort ..."
         $IsSqlPortOpen = "FAIL - Unknown error" 
         try {
@@ -77,12 +114,6 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
         }
         catch {
             $IsSqlPortOpen = $Error[0].Exception.InnerException.Message
-        }
-
-        $results += @{ IsSqlPortOpen = $IsSqlPortOpen }        
-
-        if($results.IsSqlPortOpen -ne "Pass") {
-            return [PSCustomObject]$results
         }
 
         Write-Verbose "Testing SMB/RPC Port 445 ..."
@@ -95,7 +126,6 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
         catch {
             $IsPort445Open = $Error[0].Exception.InnerException.Message
         }
-        $results += @{ IsPort445Open = $IsPort445Open }
         
         Write-Verbose "Testing RPC Port 135 ..."
         $IsPort135Open = "FAIL"
@@ -107,80 +137,137 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
         catch {
             $IsPort135Open = $Error[0].Exception.InnerException.Message
         }
-        $results += @{ IsPort135Open = $IsPort135Open }
 
         # test SQL Connection has sysadmin role
-        Write-Verbose "Testing sysadmin rights in SQL Server ..."
-        $SqlCmdArgs = @{
-            ServerInstance = $InstanceName
-            Query = "select is_srvrolemember('sysadmin') as IsSysAdmin"
-        }
-        if (! [string]::IsNullOrEmpty($UserName)) {
-            $SqlCmdArgs += @{
-                UserName = $UserName
-                Password = $Password 
-            }
-        }
         $IsSQLSysAdmin = "FAIL"
-        try {
-            if ((Invoke-Sqlcmd @SqlCmdArgs).IsSysAdmin -eq 1) {
-                $IsSQLSysAdmin = "Pass"
-            }
-        }
-        catch{
-            $IsSQLSysAdmin = $Error[0].Exception.InnerException.Message
-        }
-        $results += @{IsSQLSysAdmin = $IsSQLSysAdmin}
-        
-
-        # test Windows connection is in local admins group
-        Write-Verbose "Testing is Windows Local Admin ..."
-        $IsLocalAdmin = "FAIL"
-        try {
-            $IsLocalAdmin = Invoke-Command -ComputerName $ServerName {
-                ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
-            }
-            if ($IsLocalAdmin) {
-                $IsLocalAdmin = "Pass"
-            }
-        }
-        catch
+        if ($IsSqlPortOpen -eq "Pass")
         {
-            $IsLocalAdmin = $Error[0].Exception.InnerException.Message
-        }
-        $results += @{IsLocalAdmin = $IsLocalAdmin}
+            Write-Verbose "Testing sysadmin rights in SQL Server ..."
+            $SqlCmdArgs = @{
+                ServerInstance = $InstanceName
+                Query = "select is_srvrolemember('sysadmin') as IsSysAdmin"
+                IncludeSqlUserErrors = $true
+                ErrorAction = 'SilentlyContinue'
+                ErrorVariable = 'SQLError'
+            }
+            if (-not [string]::IsNullOrEmpty($UserName)) {
+                $SqlCmdArgs += @{
+                    UserName = $UserName
+                    Password = $Password 
+                }
+            }
 
-        # test WMI connection
-        Write-Verbose "Testing WMI Connection ..."
-        $WMITest = "FAIL"
-        try {
-            if (-not ([string]::IsNullOrEmpty((Get-WmiObject -class Win32_OperatingSystem -computername $ServerName).Caption)))
+            try {
+                if ((Invoke-Sqlcmd @SqlCmdArgs).IsSysAdmin -eq 1) {
+                    $IsSQLSysAdmin = "Pass"
+                }
+            }
+            catch {
+                if (-not [string]::IsNullOrEmpty($Error[0].Exception.InnerException.Message)) 
+                {
+                    $IsSQLSysAdmin = $Error[0].Exception.InnerException.Message
+                }
+            }
+            # let's catch the uncatcheable
+            if (-not [string]::IsNullOrEmpty($SQLError))
             {
-                $WMITest = "Pass"
+                $IsSQLSysAdmin = $SQLError.Exception.Message
+            }        
+        }
+
+        # testing WMI
+        if ($IsSqlPortOpen -eq "Pass")
+        {        
+            Write-Verbose "Testing WMI Connection ..."
+            $WMITest = "FAIL"
+            try {
+                if (-not ([string]::IsNullOrEmpty((Get-WmiObject -class Win32_OperatingSystem -computername $ServerName -ErrorAction SilentlyContinue -ErrorVariable WMIError).Caption)))
+                {
+                    $WMITest = "Pass"
+                }
+            }
+            catch
+            {
+                $WMITest = $Error[0].Exception.Message
+            }
+
+            if(-not [string]::IsNullOrEmpty($WMIError))
+            {
+                $WMITest = $WMIError
             }
         }
-        catch
+        # test Windows connection is in local admins group over WMI
+        if ($WMITest -eq "Pass")
         {
-            $WMITest = $Error[0].Exception.InnerException.Message
+            Write-Verbose "Testing is Windows Local Admin using WMI ..."
+            $IsLocalAdmin = "FAIL"
+            try {
+                $IsLocalAdmin = Test-IsLocalAdmin -ComputerName $ServerName
+                if ($IsLocalAdmin) {
+                    $IsLocalAdmin = "Pass"
+                }            
+            }
+            catch
+            {
+                $IsLocalAdmin = $Error[0].Exception.Message
+            }               
         }
-        
-        $results += @{ WMITest = $WMITest }
 
         # test perfmon
-        Write-Verbose "Testing Perfmon Counters (takes a while) ..."
-        $PerfmonTest = "FAIL"
-        try {
-            if(((get-counter -ListSet Processor -ComputerName $ServerName).Counter.Count) -gt 0)
+        if ($IsSqlPortOpen -eq "Pass" -and $IsPort445Open -eq "Pass")
+        {
+            Write-Verbose "Testing Perfmon Counters (takes a while) ..."
+            $PerfmonTest = "FAIL"
+            try {
+                if(((get-counter -ListSet Processor -ComputerName $ServerName -ErrorAction SilentlyContinue -ErrorVariable PerfmonError).Counter.Count) -gt 0)
+                {
+                    $PerfmonTest = "Pass"
+                }
+            }
+            catch{
+                $PerfmonTest = $Error[0].Exception.Message
+            }
+            # let's catch the uncatcheable
+            if (-not [string]::IsNullOrEmpty($PerfmonError))
             {
-                $PerfmonTest = "Pass"
+                $PerfmonTest = $PerfmonError
             }
         }
-        catch{
-            $PerfmonTest = $Error[0].Exception.InnerException.Message
+        $SentryOneMode = "Not monitored"
+        if (
+            ($IsSQLSysadmin -eq "Pass") -and
+            ($PerfmonTest -eq "Pass") -and 
+            ($IsLocalAdmin -eq "Pass") -and
+            ($WMITest -eq "Pass")
+        )
+        {
+            $SentryOneMode = "Full"
         }
-        $results += @{ PerfmonTest = $PerfmonTest }
 
-        return [PSCustomObject]$results
+        if (
+            ($IsSQLSysadmin -eq "Pass") -and
+            (($PerfmonTest -ne "Pass") -or
+            ($IsLocalAdmin -ne "Pass") -or
+            ($WMITest -ne "Pass"))
+        )
+        {
+            $SentryOneMode = "Limited"
+        }
+
+        return [PSCustomObject]@{
+            ServerName = $ServerName
+            InstanceName = $InstanceName
+            IpAddress = $ip
+            SentryOneMode = $SentryOneMode
+            IsSqlPortOpen = $IsSqlPortOpen
+            SQLPort = $SQLPort
+            IsPort445Open = $IsPort445Open
+            IsPort135Open = $IsPort135Open
+            IsSQLSysAdmin = $IsSQLSysAdmin
+            IsLocalAdmin = $IsLocalAdmin
+            PerfmonTest = $PerfmonTest
+            WMITest = $WMITest
+        }
     }
 }
 
@@ -200,4 +287,49 @@ Function Test-TcpPort
     } else {
         return $false
     }
+}
+
+Function Test-IsRSATInstalled
+{
+    if ((Get-WmiObject -Class Win32_OperatingSystem).Caption -match "Server")
+    {
+        return (Get-WindowsFeature -Name RSAT).Installed
+    }
+    else
+    {
+        return ((Get-WindowsOptionalFeature -online -FeatureName RSATClient).State -eq "Enabled")
+    }
+}
+
+Function Test-IsLocalAdmin
+{
+    [cmdletbinding()]
+    param (
+        [parameter(Mandatory=$true)]$ComputerName
+    )
+    
+    $IsLocalAdmin = $false
+    $adminMembers = Get-LocalAdminMembers $ComputerName
+    $IsLocalAdmin = $adminMembers -contains $env:USERNAME
+    if (-not $IsLocalAdmin)
+    {
+        $userMembers = Get-ADPrincipalGroupMembership -Identity $env:USERNAME | % { "$($env:USERDOMAIN)\$($_.Name)" }
+        $IsLocalAdmin = (($userMembers | ? { $adminMembers -contains $_}).Count -gt 0)
+    }
+    return $IsLocalAdmin
+}
+
+Function Get-LocalAdminMembers
+{
+    [cmdletbinding()]
+    param (
+        [parameter(Mandatory=$true)]$ComputerName
+    )
+    $admins = Gwmi win32_groupuser -computer $ComputerName  
+    $admins = $admins | ? {$_.groupcomponent -like '*"Administrators"'}  
+  
+    return $admins | foreach {  
+        $_.partcomponent -match ".+Domain\=(.+)\,Name\=(.+)$" > $nul  
+        $matches[1].trim('"') + "\" + $matches[2].trim('"')  
+    }  
 }

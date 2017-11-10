@@ -71,32 +71,57 @@ Connects to the server SQLSERVERBOX and named instance SQLSERVERBOX\A with SQL A
 
 A **PSCustomObject** with the following properties is returned
 
-* **PerfmonTest**: True or False indicates whether perfmon counters can be gathered
+
 * **ServerName**: the server name - useful when analysing a batch of servers from a json file.
 * **InstanceName**: The named instance - useful when analysing a batch of servers from a json file.
-* **IsPort135Open**: True or False
-* **IsLocalAdmin**: True or False. The logged in account is a member of Administrators group on the target
-* **IsPort445Open**: True or False
-* **IsSQLSysAdmin**: True or False. Windows Auth: logged on account is in sysadmin role in SQL Server. SQL Auth: the **-UserName** login is in sysadmin role in SQL Server.
-* **IsSqlPortOpen**: True or False
 * **IpAddress**: xx.xx.xx.xx. Returns the IP Address of the **-ServerName** to make sure name resolution is working.
-* **WMITest**: True or False. WMI is running and responding.
+* **SentryOneMode**: Full, Limited or Not Monitored. This is the mode that Sentry One is able to connect at, if it can.
+* **IsSqlPortOpen**: Pass or FAIL
+* **SqlPort**: The SQL Port discovered for dynamic ports on named instances
+* **IsPort445Open**: Pass or FAIL
+* **IsPort135Open**: Pass or FAIL
+* **IsSQLSysAdmin**: Pass or FAIL. Windows Auth: logged on account is in sysadmin role in SQL Server. SQL Auth: the 
+* **IsLocalAdmin**: Pass or FAIL. The logged in account is a member of Administrators group on the target
+* **PerfmonTest**: Pass or FAIL. indicates whether perfmon counters can be gathered
+* **WMITest**: Pass or FAIL. WMI is running and responding.
 
-### Example output
+### Example output 1
+
+Sentry One can connect in Full mode.
 
 ```
-PerfmonTest   : True
 ServerName    : SQLSERVERBOX
 InstanceName  : SQLSERVERBOX\A
-IsPort135Open : True
-IsLocalAdmin  : True
-IsPort445Open : True
-IsSQLSysAdmin : True
-IsSqlPortOpen : True
-IpAddress     : 10.0.12.64
-WMITest       : True
+IpAddress     : 10.0.2.2
+SentryOneMode : Full
+IsSqlPortOpen : Pass
+SQLPort       : 65352
+IsPort445Open : Pass
+IsPort135Open : Pass
+IsSQLSysAdmin : Pass
+IsLocalAdmin  : Pass
+PerfmonTest   : Pass
+WMITest       : Pass
 ```
+### Example output 2
 
+Sentry One can connect in Limited mode. Windows metrics will not be available.
+
+```
+ServerName    : SQLSERVERBOX2
+InstanceName  : SQLSERVERBOX2
+IpAddress     : 10.0.2.3
+SentryOneMode : Limited
+IsSqlPortOpen : Pass
+SQLPort       : 58906
+IsPort445Open : Pass
+IsPort135Open : A connection attempt failed because the connected party did not properly respond after a period of time, 
+                or established connection failed because connected host has failed to respond 10.0.2.3:135
+IsSQLSysAdmin : Pass
+IsLocalAdmin  : 
+PerfmonTest   : Pass
+WMITest       : {The RPC server is unavailable. (Exception from HRESULT: 0x800706BA)}
+```
 ## Notes
 
 * This script depends on the **SQLServer** PowerShell module. Install it from the [PowerShell gallery](https://docs.microsoft.com/en-us/sql/ssms/download-sql-server-ps-module) with:
