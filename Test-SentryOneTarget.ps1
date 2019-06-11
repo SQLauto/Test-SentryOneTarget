@@ -71,7 +71,7 @@ Test-SentryOneTarget -ServerName SQLSERVERBOX
 
         # https://cdn.sentryone.com/help/qs/webframe.html?Performance%20Advisor%20Required%20Ports.html#Performance%20Advisor%20Required%20Ports.html#Performance%20Advisor%20Required%20Ports.html
         Write-Verbose "Resolving IP Address ..."
-        $ip = [string](Resolve-DnsName -Name "$ServerName" -ErrorAction 'Stop' -Verbose:$False).IPAddress
+        $ip = [string](Resolve-DnsName -Name "$ServerName" -Type A -ErrorAction 'Stop' -Verbose:$False).IPAddress
 
         # let's try connecting to the SQL Server Instance directly without testing the ports first
         # named instances can have dynamic ports so let's just try and connect.
